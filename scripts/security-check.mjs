@@ -41,20 +41,28 @@ const w1 = await login('worker1')
 const w2 = await login('worker2')
 
 const { data: allTasks } = await manager.from('tasks').select('id, title, status, assignee_id')
-check('постановщик видит все задачи', allTasks.length === 6, `видит ${allTasks.length}`)
+const { data: allObjects } = await manager.from('objects').select('id, name')
+check('постановщик видит задачи и объекты', allTasks.length > 0 && allObjects.length > 0,
+  `задач ${allTasks.length}, объектов ${allObjects.length}`)
 
-const { data: w1Tasks } = await w1.from('tasks').select('id, title, status')
+const { data: w1User0 } = await w1.auth.getUser()
+const w1Id = w1User0.user.id
+const { data: w1Tasks } = await w1.from('tasks').select('id, title, status, assignee_id')
+const mineOnly = w1Tasks.every((t) => t.assignee_id === w1Id)
 check(
-  'исполнитель видит только свои задачи',
-  w1Tasks.length === 3,
-  `видит ${w1Tasks.length} из ${allTasks.length}`,
+  'исполнителю отдаются только его задачи',
+  mineOnly && w1Tasks.length < allTasks.length,
+  `видит ${w1Tasks.length} из ${allTasks.length}, все назначены на него: ${mineOnly}`,
 )
 
 const { data: w1Objects } = await w1.from('objects').select('id, name')
+const hisObjectIds = new Set(w1Tasks.map((t) => t.object_id))
+const { data: w1Tasks2 } = await w1.from('tasks').select('object_id')
+for (const t of w1Tasks2) hisObjectIds.add(t.object_id)
 check(
-  'исполнитель видит только свои объекты',
-  w1Objects.length === 2,
-  `видит ${w1Objects.length} из 3`,
+  'исполнителю отдаются только объекты с его задачами',
+  w1Objects.length < allObjects.length && w1Objects.every((o) => hisObjectIds.has(o.id)),
+  `видит ${w1Objects.length} из ${allObjects.length}`,
 )
 
 const foreign = allTasks.find((t) => t.assignee_id && !w1Tasks.some((x) => x.id === t.id))
@@ -152,8 +160,14 @@ const { data: foreignHist } = await w1.from('task_history').select('id').eq('tas
 check('история чужой задачи не видна', foreignHist.length === 0)
 
 const anon = createClient(URL_, KEY)
-const { data: anonTasks } = await anon.from('tasks').select('id')
-check('без входа не видно ничего', !anonTasks || anonTasks.length === 0)
+const anonResults = await Promise.all(
+  ['tasks', 'objects', 'task_history', 'profiles'].map((t) => anon.from(t).select('id')),
+)
+check(
+  'без входа ни одна таблица не отдаётся',
+  anonResults.every((r) => r.error && !r.data),
+  anonResults.map((r) => r.error?.code ?? 'ОТДАЛОСЬ').join(', '),
+)
 
 // убираем за собой: временная задача и её история
 await manager.from('tasks').delete().eq('id', own.id)
